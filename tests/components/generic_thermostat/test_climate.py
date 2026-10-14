@@ -70,6 +70,7 @@ from tests.components.switch.common import MockSwitch
 ENTITY = "climate.test"
 ENT_SENSOR = "sensor.test"
 ENT_SWITCH = "switch.test"
+ENT_WINDOW = "binary_sensor.test_window"
 HEAT_ENTITY = "climate.test_heat"
 COOL_ENTITY = "climate.test_cool"
 ATTR_AWAY_MODE = "away_mode"
@@ -217,6 +218,11 @@ async def test_unique_id(
 def _setup_sensor(hass: HomeAssistant, temp: StateType) -> None:
     """Set up the test sensor."""
     hass.states.async_set(ENT_SENSOR, temp)
+
+
+def _setup_window(hass: HomeAssistant, state: str) -> None:
+    """Set up the test window sensor."""
+    hass.states.async_set(ENT_WINDOW, state)
 
 
 @pytest.fixture
@@ -2090,3 +2096,360 @@ async def test_stale_context_not_used_as_parent(
     # The keepalive call's context should have no parent,
     # because the original context expired long ago
     assert calls[0].context.parent_id is None
+
+
+@pytest.mark.usefixtures("setup_comp_1")
+async def test_window_sensor_pause_and_resume(hass: HomeAssistant) -> None:
+    """Test thermostat pauses heating when window is opened and resumes when closed."""
+    heater_switch = "input_boolean.test"
+    assert await async_setup_component(
+        hass, input_boolean.DOMAIN, {"input_boolean": {"test": None}}
+    )
+    _setup_window(hass, STATE_OFF)
+
+    assert await async_setup_component(
+        hass,
+        CLIMATE_DOMAIN,
+        {
+            "climate": {
+                "platform": "generic_thermostat",
+                "name": "test",
+                "heater": heater_switch,
+                "target_sensor": ENT_SENSOR,
+                "window_sensor": ENT_WINDOW,
+                "initial_hvac_mode": HVACMode.HEAT,
+                "target_temp": 22,
+            }
+        },
+    )
+    await hass.async_block_till_done()
+
+    # Initially heating is needed (18 < 22)
+    _setup_sensor(hass, 18)
+    await hass.async_block_till_done()
+    assert hass.states.get(heater_switch).state == STATE_ON
+
+    state = hass.states.get(ENTITY)
+    assert state.attributes.get("window_open") is False
+    assert state.attributes.get("window_paused") is False
+
+    # Open window -> heating should pause immediately
+    _setup_window(hass, STATE_ON)
+    await hass.async_block_till_done()
+    assert hass.states.get(heater_switch).state == STATE_OFF
+
+    state = hass.states.get(ENTITY)
+    assert state.attributes.get("window_open") is True
+    assert state.attributes.get("window_paused") is True
+
+    # Temperature drops further while window is open -> heater should NOT turn on
+    _setup_sensor(hass, 14)
+    await hass.async_block_till_done()
+    assert hass.states.get(heater_switch).state == STATE_OFF
+
+    # Close window -> heating resumes
+    _setup_window(hass, STATE_OFF)
+    await hass.async_block_till_done()
+    assert hass.states.get(heater_switch).state == STATE_ON
+
+    state = hass.states.get(ENTITY)
+    assert state.attributes.get("window_open") is False
+    assert state.attributes.get("window_paused") is False
+
+
+@pytest.mark.usefixtures("setup_comp_1")
+async def test_window_sensor_delays_and_debounce(
+    hass: HomeAssistant, freezer: FrozenDateTimeFactory
+) -> None:
+    """Test window open/close delays and debouncing behavior."""
+    heater_switch = "input_boolean.test"
+    assert await async_setup_component(
+        hass, input_boolean.DOMAIN, {"input_boolean": {"test": None}}
+    )
+    _setup_window(hass, STATE_OFF)
+
+    assert await async_setup_component(
+        hass,
+        CLIMATE_DOMAIN,
+        {
+            "climate": {
+                "platform": "generic_thermostat",
+                "name": "test",
+                "heater": heater_switch,
+                "target_sensor": ENT_SENSOR,
+                "window_sensor": ENT_WINDOW,
+                "window_open_delay": datetime.timedelta(seconds=10),
+                "window_close_delay": datetime.timedelta(seconds=15),
+                "initial_hvac_mode": HVACMode.HEAT,
+                "target_temp": 22,
+            }
+        },
+    )
+    await hass.async_block_till_done()
+
+    # Temperature triggers heating
+    _setup_sensor(hass, 18)
+    await hass.async_block_till_done()
+    assert hass.states.get(heater_switch).state == STATE_ON
+
+    # 1. Window opens briefly and closes before delay (debounce)
+    _setup_window(hass, STATE_ON)
+    await hass.async_block_till_done()
+    # Still ON immediately because open_delay is 10s
+    assert hass.states.get(heater_switch).state == STATE_ON
+    state = hass.states.get(ENTITY)
+    assert state.attributes.get("window_open") is True
+    assert state.attributes.get("window_paused") is False
+
+    # Advance 5s (half of open_delay)
+    freezer.tick(datetime.timedelta(seconds=5))
+    async_fire_time_changed(hass)
+    await hass.async_block_till_done()
+    assert hass.states.get(heater_switch).state == STATE_ON
+
+    # Window closes before 10s delay expires
+    _setup_window(hass, STATE_OFF)
+    await hass.async_block_till_done()
+    assert hass.states.get(heater_switch).state == STATE_ON
+
+    # Advance 10s -> heater still ON, never paused
+    freezer.tick(datetime.timedelta(seconds=10))
+    async_fire_time_changed(hass)
+    await hass.async_block_till_done()
+    assert hass.states.get(heater_switch).state == STATE_ON
+    state = hass.states.get(ENTITY)
+    assert state.attributes.get("window_open") is False
+    assert state.attributes.get("window_paused") is False
+
+    # 2. Open window and let delay expire
+    _setup_window(hass, STATE_ON)
+    await hass.async_block_till_done()
+    assert hass.states.get(heater_switch).state == STATE_ON
+
+    freezer.tick(datetime.timedelta(seconds=10))
+    async_fire_time_changed(hass)
+    await hass.async_block_till_done()
+    # Now paused!
+    assert hass.states.get(heater_switch).state == STATE_OFF
+    state = hass.states.get(ENTITY)
+    assert state.attributes.get("window_open") is True
+    assert state.attributes.get("window_paused") is True
+
+    # 3. Close window with close_delay (15s)
+    _setup_window(hass, STATE_OFF)
+    await hass.async_block_till_done()
+    # Immediately after close, heater should still be OFF until close_delay expires
+    assert hass.states.get(heater_switch).state == STATE_OFF
+    state = hass.states.get(ENTITY)
+    assert state.attributes.get("window_open") is False
+    assert state.attributes.get("window_paused") is True
+
+    # Advance 5s -> still OFF
+    freezer.tick(datetime.timedelta(seconds=5))
+    async_fire_time_changed(hass)
+    await hass.async_block_till_done()
+    assert hass.states.get(heater_switch).state == STATE_OFF
+
+    # Window re-opened during close delay!
+    _setup_window(hass, STATE_ON)
+    await hass.async_block_till_done()
+    # Close timer should be cancelled, still paused
+    freezer.tick(datetime.timedelta(seconds=15))
+    async_fire_time_changed(hass)
+    await hass.async_block_till_done()
+    assert hass.states.get(heater_switch).state == STATE_OFF
+    assert hass.states.get(ENTITY).attributes.get("window_paused") is True
+
+    # Now close window and wait full 15s
+    _setup_window(hass, STATE_OFF)
+    await hass.async_block_till_done()
+    freezer.tick(datetime.timedelta(seconds=15))
+    async_fire_time_changed(hass)
+    await hass.async_block_till_done()
+    # Resumed!
+    assert hass.states.get(heater_switch).state == STATE_ON
+    state = hass.states.get(ENTITY)
+    assert state.attributes.get("window_open") is False
+    assert state.attributes.get("window_paused") is False
+
+
+@pytest.mark.usefixtures("setup_comp_1")
+async def test_window_sensor_respects_cycle_cooldown(
+    hass: HomeAssistant, freezer: FrozenDateTimeFactory
+) -> None:
+    """Test that resuming from window pause respects cycle_cooldown."""
+    heater_switch = "input_boolean.test"
+    assert await async_setup_component(
+        hass, input_boolean.DOMAIN, {"input_boolean": {"test": None}}
+    )
+    _setup_window(hass, STATE_OFF)
+
+    assert await async_setup_component(
+        hass,
+        CLIMATE_DOMAIN,
+        {
+            "climate": {
+                "platform": "generic_thermostat",
+                "name": "test",
+                "heater": heater_switch,
+                "target_sensor": ENT_SENSOR,
+                "window_sensor": ENT_WINDOW,
+                "cycle_cooldown": datetime.timedelta(seconds=30),
+                "initial_hvac_mode": HVACMode.HEAT,
+                "target_temp": 22,
+            }
+        },
+    )
+    await hass.async_block_till_done()
+
+    _setup_sensor(hass, 18)
+    await hass.async_block_till_done()
+    assert hass.states.get(heater_switch).state == STATE_ON
+
+    # Run for 10s then open window
+    freezer.tick(datetime.timedelta(seconds=10))
+    async_fire_time_changed(hass)
+    _setup_window(hass, STATE_ON)
+    await hass.async_block_till_done()
+    # Heater turns off at this point (cooldown starts)
+    assert hass.states.get(heater_switch).state == STATE_OFF
+
+    # Close window 5s later (only 5s since turn off, cooldown is 30s)
+    freezer.tick(datetime.timedelta(seconds=5))
+    async_fire_time_changed(hass)
+    _setup_window(hass, STATE_OFF)
+    await hass.async_block_till_done()
+
+    # Window is unpaused, but heater MUST NOT turn on yet due to cooldown!
+    assert hass.states.get(ENTITY).attributes.get("window_paused") is False
+    assert hass.states.get(heater_switch).state == STATE_OFF
+
+    # Advance 20s - still in cooldown
+    freezer.tick(datetime.timedelta(seconds=20))
+    async_fire_time_changed(hass)
+    await hass.async_block_till_done()
+    assert hass.states.get(heater_switch).state == STATE_OFF
+
+    # Advance remaining time for cooldown check callback to fire
+    freezer.tick(datetime.timedelta(seconds=20))
+    async_fire_time_changed(hass)
+    await hass.async_block_till_done()
+    # Cooldown timer expired, heater turns back ON
+    assert hass.states.get(heater_switch).state == STATE_ON
+
+
+@pytest.mark.usefixtures("setup_comp_1")
+async def test_window_sensor_unavailable_and_unknown(
+    hass: HomeAssistant, freezer: FrozenDateTimeFactory
+) -> None:
+    """Test window sensor unavailable and unknown states do not cause error or false toggle."""
+    heater_switch = "input_boolean.test"
+    assert await async_setup_component(
+        hass, input_boolean.DOMAIN, {"input_boolean": {"test": None}}
+    )
+    _setup_window(hass, STATE_OFF)
+
+    assert await async_setup_component(
+        hass,
+        CLIMATE_DOMAIN,
+        {
+            "climate": {
+                "platform": "generic_thermostat",
+                "name": "test",
+                "heater": heater_switch,
+                "target_sensor": ENT_SENSOR,
+                "window_sensor": ENT_WINDOW,
+                "window_open_delay": datetime.timedelta(seconds=10),
+                "initial_hvac_mode": HVACMode.HEAT,
+                "target_temp": 22,
+            }
+        },
+    )
+    await hass.async_block_till_done()
+
+    _setup_sensor(hass, 18)
+    await hass.async_block_till_done()
+    assert hass.states.get(heater_switch).state == STATE_ON
+
+    # Window opens
+    _setup_window(hass, STATE_ON)
+    await hass.async_block_till_done()
+
+    # Window sensor goes UNAVAILABLE before delay expires
+    _setup_window(hass, STATE_UNAVAILABLE)
+    await hass.async_block_till_done()
+
+    # Advance time -> delay should have been cancelled, heater stays ON
+    freezer.tick(datetime.timedelta(seconds=15))
+    async_fire_time_changed(hass)
+    await hass.async_block_till_done()
+    assert hass.states.get(heater_switch).state == STATE_ON
+
+    # Sensor goes UNKNOWN
+    _setup_window(hass, STATE_UNKNOWN)
+    await hass.async_block_till_done()
+    assert hass.states.get(heater_switch).state == STATE_ON
+
+
+@pytest.mark.usefixtures("setup_comp_1")
+async def test_window_sensor_startup_already_open(hass: HomeAssistant) -> None:
+    """Test thermostat startup when window sensor is already open."""
+    heater_switch = "input_boolean.test"
+    assert await async_setup_component(
+        hass, input_boolean.DOMAIN, {"input_boolean": {"test": None}}
+    )
+    _setup_window(hass, STATE_ON)
+    _setup_sensor(hass, 18)
+
+    assert await async_setup_component(
+        hass,
+        CLIMATE_DOMAIN,
+        {
+            "climate": {
+                "platform": "generic_thermostat",
+                "name": "test",
+                "heater": heater_switch,
+                "target_sensor": ENT_SENSOR,
+                "window_sensor": ENT_WINDOW,
+                "initial_hvac_mode": HVACMode.HEAT,
+                "target_temp": 22,
+            }
+        },
+    )
+    await hass.async_block_till_done()
+
+    # Should initialize as paused and keep heater OFF
+    assert hass.states.get(heater_switch).state == STATE_OFF
+    state = hass.states.get(ENTITY)
+    assert state.attributes.get("window_open") is True
+    assert state.attributes.get("window_paused") is True
+
+
+@pytest.mark.usefixtures("setup_comp_1")
+async def test_backward_compatibility_no_window_sensor(hass: HomeAssistant) -> None:
+    """Test that generic_thermostat without window sensor has no window attributes."""
+    heater_switch = "input_boolean.test"
+    assert await async_setup_component(
+        hass, input_boolean.DOMAIN, {"input_boolean": {"test": None}}
+    )
+    _setup_sensor(hass, 18)
+
+    assert await async_setup_component(
+        hass,
+        CLIMATE_DOMAIN,
+        {
+            "climate": {
+                "platform": "generic_thermostat",
+                "name": "test",
+                "heater": heater_switch,
+                "target_sensor": ENT_SENSOR,
+                "initial_hvac_mode": HVACMode.HEAT,
+                "target_temp": 22,
+            }
+        },
+    )
+    await hass.async_block_till_done()
+
+    state = hass.states.get(ENTITY)
+    assert "window_open" not in state.attributes
+    assert "window_paused" not in state.attributes
