@@ -304,6 +304,7 @@ def _tool_result_block(
 
     return tool_result_block, external_tool
 
+
 def _text_blocks(content: conversation.AssistantContent) -> list[TextBlockParam]:
     """Split the text into blocks, attaching citations where they exist."""
     blocks: list[TextBlockParam] = []
@@ -359,7 +360,7 @@ def _tool_call_block(tool_call) -> ContentBlockParam:
     )
 
 
-def _convert_content(  # noqa: C901
+def _convert_content(
     chat_content: Iterable[conversation.Content],
 ) -> tuple[list[MessageParam], str | None]:
     """Transform HA chat_log content into Anthropic API format."""
