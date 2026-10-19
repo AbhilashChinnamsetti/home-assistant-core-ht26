@@ -307,29 +307,31 @@ def _tool_result_block(
 
 def _text_blocks(content: conversation.AssistantContent) -> list[TextBlockParam]:
     """Split the text into blocks, attaching citations where they exist."""
+    text = content.content
+    if not text:
+        return []
+
     blocks: list[TextBlockParam] = []
     current_index = 0
     for detail in (
         content.native.citation_details
         if isinstance(content.native, ContentDetails)
-        else [CitationDetails(length=len(content.content))]
+        else [CitationDetails(length=len(text))]
     ):
         if detail.index > current_index:
             # Text without citations
             blocks.append(
-                TextBlockParam(
-                    type="text", text=content.content[current_index : detail.index]
-                )
+                TextBlockParam(type="text", text=text[current_index : detail.index])
             )
-        text = content.content[detail.index : detail.index + detail.length]
+        segment = text[detail.index : detail.index + detail.length]
         blocks.append(
-            TextBlockParam(type="text", text=text, citations=detail.citations)
+            TextBlockParam(type="text", text=segment, citations=detail.citations)
             if detail.citations
-            else TextBlockParam(type="text", text=text)
+            else TextBlockParam(type="text", text=segment)
         )
         current_index = detail.index + detail.length
-    if current_index < len(content.content):
-        blocks.append(TextBlockParam(type="text", text=content.content[current_index:]))
+    if current_index < len(text):
+        blocks.append(TextBlockParam(type="text", text=text[current_index:]))
     return blocks
 
 
@@ -343,7 +345,7 @@ _EXTERNAL_TOOLS = (
 )
 
 
-def _tool_call_block(tool_call) -> ContentBlockParam:
+def _tool_call_block(tool_call: llm.ToolInput) -> ContentBlockParam:
     """Server-side tools use a different block type than regular tools."""
     if tool_call.external and tool_call.tool_name in _EXTERNAL_TOOLS:
         return ServerToolUseBlockParam(
