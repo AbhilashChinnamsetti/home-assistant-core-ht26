@@ -88,8 +88,6 @@ def mock_config_entry() -> MockConfigEntry:
         unique_id=USER_ID,
     )
 
-
 @pytest.fixture(autouse=True)
-def mock_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Set a test API key in the environment."""
+def mock_api_key(monkeypatch):
     monkeypatch.setenv("ALADDIN_API_KEY", "test-api-key")
