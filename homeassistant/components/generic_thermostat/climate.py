@@ -448,13 +448,14 @@ class GenericThermostat(ClimateEntity, RestoreEntity):
 
     @property
     @override
-    def extra_state_attributes(self) -> dict[str, Any] | None:
+    def extra_state_attributes(self) -> Mapping[str, Any] | None:
         """Return device state attributes."""
-        attrs = super().extra_state_attributes or {}
-        if self._window_sensor_entity_id is not None:
-            attrs["window_open"] = self._is_window_open
-            attrs["window_paused"] = self._is_window_paused
-        return attrs or None
+        if self._window_sensor_entity_id is None:
+            return super().extra_state_attributes
+        attrs: dict[str, Any] = dict(super().extra_state_attributes or {})
+        attrs["window_open"] = self._is_window_open
+        attrs["window_paused"] = self._is_window_paused
+        return attrs
 
     @property
     @override
