@@ -1,3 +1,5 @@
+"""API for Aladdin Connect."""
+
 import os
 from typing import cast, override
 
