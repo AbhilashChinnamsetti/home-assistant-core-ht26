@@ -30,7 +30,7 @@ repos:
       - id: check-executables-have-shebangs
         stages: [manual]
       - id: check-json
-        exclude: (.vscode|.devcontainer)
+        exclude: (.vscode|.devcontainer|^tests/fixtures/)
       - id: no-commit-to-branch
         args:
           - --branch=dev
