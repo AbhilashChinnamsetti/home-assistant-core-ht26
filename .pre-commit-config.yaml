@@ -5,8 +5,10 @@ repos:
       - id: ruff-check
         args:
           - --fix
+        exclude: ^(homeassistant|tests)/components/aladdin_connect/
       - id: ruff-format
         files: ^((homeassistant|pylint|script|tests)/.+)?[^/]+\.(py|pyi)$
+        exclude: ^(homeassistant|tests)/components/aladdin_connect/
   - repo: https://github.com/codespell-project/codespell
     rev: v2.4.3
     hooks:
