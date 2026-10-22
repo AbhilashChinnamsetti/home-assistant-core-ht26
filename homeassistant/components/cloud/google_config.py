@@ -9,6 +9,8 @@ from typing import TYPE_CHECKING, Any, override
 from hass_nabucasa import Cloud
 from hass_nabucasa.google_report_state import ErrorResponse
 
+from collections.abc import Collection
+
 from homeassistant.components.binary_sensor import (
     DOMAIN as BINARY_SENSOR_DOMAIN,
     BinarySensorDeviceClass,
